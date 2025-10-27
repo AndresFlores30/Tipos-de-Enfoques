@@ -1,4 +1,4 @@
-# Red Bayesiana Dinámica (DBN) sencilla en TRON
+# Red Bayesiana Dinámica (DBN) en TRON
 # - Cadena oculta: Interf_t -> Interf_{t+1}
 # - Emisión: Interf_t -> Sensor_t
 # - Simulación del Grid: Loc_{t+1} | Loc_t, Acción_t, Interf_t (para generar trazas)
