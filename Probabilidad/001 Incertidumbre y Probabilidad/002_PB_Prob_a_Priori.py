@@ -19,7 +19,7 @@ P_Power: Dict[str, float] = {
 # Cálculo y demostración de uso
 # -------------------------------------------------------
 
-def demo():
+def main():
     print("Probabilidad a Priori en TRON")
     print("-----------------------------")
     print("Estados posibles del sistema de energía:")
@@ -43,4 +43,4 @@ def demo():
         print("  -> Se predice que el sistema TRON probablemente esté en estado 'Bad' (energía inestable).")
 
 if __name__ == "__main__":
-    demo()
+    main()

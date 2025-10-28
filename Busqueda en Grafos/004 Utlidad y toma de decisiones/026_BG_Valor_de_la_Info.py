@@ -1,212 +1,483 @@
-# - MEU sin información
-# - EVPI (información perfecta sobre Interferencia)
-# - EVSI (información imperfecta mediante un Sensor con ruido y costo)
-# - Política óptima condicionada al sensor y análisis de sensibilidad
+"""
+SISTEMA DE VALORACION DE INFORMACION PARA DECISIONES - TRON DIGITAL
+
+Este modulo implementa metricas avanzadas para cuantificar el valor de la
+informacion en la toma de decisiones bajo incertidumbre. Calcula EVPI (Valor
+Esperado de la Informacion Perfecta) y EVSI (Valor Esperado de la Informacion
+de Muestra) para determinar cuando vale la pena recolectar informacion antes
+de tomar decisiones estrategicas.
+"""
 
 from typing import Dict, Tuple, List
 
-# ------------------------------------------------------------
-# Modelo TRON (probabilidades y utilidades)
-# ------------------------------------------------------------
 
-# P(Interferencia)
-P_Interf = {"Baja": 0.6, "Alta": 0.4}
+# ============================================================
+# MODELO PROBABILISTICO Y DE UTILIDADES PARA TRON
+# ============================================================
 
-# P(Firewall) independiente para simplificar
-P_Firewall = {"Off": 0.7, "On": 0.3}
+# Probabilidad prior de Interferencia en el sistema
+PROBABILIDAD_INTERFERENCIA = {
+    "Baja": 0.6,   # 60% probabilidad de interferencia baja
+    "Alta": 0.4,   # 40% probabilidad de interferencia alta
+}
 
-# Acciones (rutas)
-RUTAS = ["Sector_Luz", "Portal", "Arena"]
+# Probabilidad de estado del Firewall (independiente)
+PROBABILIDAD_FIREWALL = {
+    "Off": 0.7,    # 70% probabilidad de firewall desactivado
+    "On": 0.3,     # 30% probabilidad de firewall activado
+}
 
-# Utilidad U(Interferencia, Firewall, Ruta)
-U: Dict[Tuple[str, str, str], float] = {}
-def defU(interf: str, fw: str, ruta: str, val: float):
-    U[(interf, fw, ruta)] = val
+# Rutas disponibles para la decision
+RUTAS_DISPONIBLES = ["Sector_Luz", "Portal", "Arena"]
 
-valores = {
+# Diccionario global para almacenar las utilidades
+UTILIDADES: Dict[Tuple[str, str, str], float] = {}
+
+
+def definir_utilidad(interferencia: str, firewall: str, ruta: str, valor: float):
+    """
+    Define el valor de utilidad para una combinacion especifica de estados.
+    
+    Parametros:
+        interferencia: Estado de interferencia ("Baja" o "Alta")
+        firewall: Estado del firewall ("Off" o "On")  
+        ruta: Ruta seleccionada
+        valor: Valor de utilidad (energia neta esperada)
+    """
+    UTILIDADES[(interferencia, firewall, ruta)] = valor
+
+
+# Definicion de utilidades basadas en caracteristicas del mundo TRON
+VALORES_UTILIDAD = {
+    # Sector_Luz - Alto rendimiento pero sensible a interferencias
     ("Baja", "Off", "Sector_Luz"): 120,
     ("Baja", "On",  "Sector_Luz"): 85,
     ("Alta", "Off", "Sector_Luz"): 60,
     ("Alta", "On",  "Sector_Luz"): 30,
 
+    # Portal - Balanceado y resistente
     ("Baja", "Off", "Portal"):     100,
     ("Baja", "On",  "Portal"):      95,
     ("Alta", "Off", "Portal"):      80,
     ("Alta", "On",  "Portal"):      55,
 
+    # Arena - Alternativa moderada
     ("Baja", "Off", "Arena"):       90,
     ("Baja", "On",  "Arena"):       70,
     ("Alta", "Off", "Arena"):       50,
     ("Alta", "On",  "Arena"):       20,
 }
-for k, v in valores.items():
-    defU(*k, v)
 
-# ------------------------------------------------------------
-# Utilidades auxiliares
-# ------------------------------------------------------------
+# Cargar todas las utilidades definidas
+for clave, valor in VALORES_UTILIDAD.items():
+    definir_utilidad(*clave, valor)
 
-def eu_ruta_priori(ruta: str) -> float:
-    """EU[ruta] sin observar nada."""
-    eu = 0.0
-    for i, pi in P_Interf.items():
-        for f, pf in P_Firewall.items():
-            eu += U[(i, f, ruta)] * pi * pf
-    return eu
 
-def mejor_ruta_priori() -> Tuple[str, float, Dict[str, float]]:
-    tabla = {a: eu_ruta_priori(a) for a in RUTAS}
-    mejor = max(tabla, key=tabla.get)
-    return mejor, tabla[mejor], tabla
+# ============================================================
+# FUNCIONES BASE DE UTILIDAD ESPERADA
+# ============================================================
 
-def posterior_interf_dado_sensor(sensor: str,
-                                 p_ok_dado_baja: float,
-                                 p_ok_dado_alta: float) -> Dict[str, float]:
+def utilidad_esperada_ruta_sin_informacion(ruta: str) -> float:
     """
-    P(Interferencia | Sensor) con Bayes a partir de:
-      P(Sensor=OK|Baja)=p_ok_dado_baja, P(Sensor=OK|Alta)=p_ok_dado_alta
-      P(Sensor=Alerta|i) = 1 - P(Sensor=OK|i)
+    Calcula la utilidad esperada de una ruta sin observar ninguna informacion.
+    
+    EU[ruta] = Σ_i Σ_f U(interferencia, firewall, ruta) * P(interferencia) * P(firewall)
+    
+    Parametros:
+        ruta: Ruta a evaluar
+        
+    Retorna:
+        float: Utilidad esperada sin informacion
     """
-    if sensor == "OK":
-        num_baja = p_ok_dado_baja * P_Interf["Baja"]
-        num_alta = p_ok_dado_alta * P_Interf["Alta"]
+    utilidad_esperada = 0.0
+    
+    for estado_interferencia, prob_interferencia in PROBABILIDAD_INTERFERENCIA.items():
+        for estado_firewall, prob_firewall in PROBABILIDAD_FIREWALL.items():
+            utilidad = UTILIDADES[(estado_interferencia, estado_firewall, ruta)]
+            utilidad_esperada += utilidad * prob_interferencia * prob_firewall
+            
+    return utilidad_esperada
+
+
+def mejor_ruta_sin_informacion() -> Tuple[str, float, Dict[str, float]]:
+    """
+    Encuentra la mejor ruta sin informacion adicional.
+    
+    Retorna:
+        Tuple: (mejor_ruta, mejor_utilidad, utilidades_por_ruta)
+    """
+    utilidades_por_ruta = {}
+    mejor_ruta = None
+    mejor_utilidad = float("-inf")
+    
+    for ruta in RUTAS_DISPONIBLES:
+        utilidad_esperada = utilidad_esperada_ruta_sin_informacion(ruta)
+        utilidades_por_ruta[ruta] = utilidad_esperada
+        
+        if utilidad_esperada > mejor_utilidad:
+            mejor_ruta = ruta
+            mejor_utilidad = utilidad_esperada
+            
+    return mejor_ruta, mejor_utilidad, utilidades_por_ruta
+
+
+def probabilidad_posterior_interferencia_dado_sensor(
+    lectura_sensor: str,
+    probabilidad_ok_dado_baja: float,
+    probabilidad_ok_dado_alta: float
+) -> Dict[str, float]:
+    """
+    Calcula la probabilidad posterior de Interferencia dado una lectura del sensor.
+    
+    Usa el teorema de Bayes: P(Interferencia | Sensor) ∝ P(Sensor | Interferencia) * P(Interferencia)
+    
+    Parametros:
+        lectura_sensor: Lectura del sensor ("OK" o "Alerta")
+        probabilidad_ok_dado_baja: P(Sensor="OK" | Interferencia="Baja")
+        probabilidad_ok_dado_alta: P(Sensor="OK" | Interferencia="Alta")
+        
+    Retorna:
+        Dict[str, float]: Distribucion posterior normalizada
+    """
+    if lectura_sensor == "OK":
+        numerador_baja = probabilidad_ok_dado_baja * PROBABILIDAD_INTERFERENCIA["Baja"]
+        numerador_alta = probabilidad_ok_dado_alta * PROBABILIDAD_INTERFERENCIA["Alta"]
+    else:  # Sensor = "Alerta"
+        numerador_baja = (1 - probabilidad_ok_dado_baja) * PROBABILIDAD_INTERFERENCIA["Baja"]
+        numerador_alta = (1 - probabilidad_ok_dado_alta) * PROBABILIDAD_INTERFERENCIA["Alta"]
+    
+    suma_total = numerador_baja + numerador_alta
+    
+    return {
+        "Baja": numerador_baja / suma_total,
+        "Alta": numerador_alta / suma_total
+    }
+
+
+def probabilidad_marginal_sensor(
+    lectura_sensor: str,
+    probabilidad_ok_dado_baja: float,
+    probabilidad_ok_dado_alta: float
+) -> float:
+    """
+    Calcula la probabilidad marginal de una lectura del sensor.
+    
+    P(Sensor) = Σ_i P(Sensor | Interferencia=i) * P(Interferencia=i)
+    
+    Parametros:
+        lectura_sensor: Lectura del sensor a evaluar
+        probabilidad_ok_dado_baja: P(Sensor="OK" | Interferencia="Baja")
+        probabilidad_ok_dado_alta: P(Sensor="OK" | Interferencia="Alta")
+        
+    Retorna:
+        float: Probabilidad de la lectura del sensor
+    """
+    if lectura_sensor == "OK":
+        return (probabilidad_ok_dado_baja * PROBABILIDAD_INTERFERENCIA["Baja"] + 
+                probabilidad_ok_dado_alta * PROBABILIDAD_INTERFERENCIA["Alta"])
     else:
-        num_baja = (1 - p_ok_dado_baja) * P_Interf["Baja"]
-        num_alta = (1 - p_ok_dado_alta) * P_Interf["Alta"]
-    s = num_baja + num_alta
-    return {"Baja": num_baja / s, "Alta": num_alta / s}
+        return ((1 - probabilidad_ok_dado_baja) * PROBABILIDAD_INTERFERENCIA["Baja"] + 
+                (1 - probabilidad_ok_dado_alta) * PROBABILIDAD_INTERFERENCIA["Alta"])
 
-def prob_sensor(sensor: str,
-                p_ok_dado_baja: float,
-                p_ok_dado_alta: float) -> float:
-    """P(Sensor=sensor) marginal."""
-    if sensor == "OK":
-        return p_ok_dado_baja * P_Interf["Baja"] + p_ok_dado_alta * P_Interf["Alta"]
-    return (1 - p_ok_dado_baja) * P_Interf["Baja"] + (1 - p_ok_dado_alta) * P_Interf["Alta"]
 
-def eu_ruta_cond_sensor(ruta: str,
-                        sensor: str,
-                        p_ok_dado_baja: float,
-                        p_ok_dado_alta: float) -> float:
-    """EU[ruta | Sensor] suponiendo Firewall independiente del sensor e interferencia."""
-    post = posterior_interf_dado_sensor(sensor, p_ok_dado_baja, p_ok_dado_alta)
-    eu = 0.0
-    for i, pi in post.items():
-        for f, pf in P_Firewall.items():
-            eu += U[(i, f, ruta)] * pi * pf
-    return eu
-
-def mejor_ruta_cond_sensor(sensor: str,
-                           p_ok_dado_baja: float,
-                           p_ok_dado_alta: float) -> Tuple[str, float, Dict[str, float]]:
-    tabla = {a: eu_ruta_cond_sensor(a, sensor, p_ok_dado_baja, p_ok_dado_alta) for a in RUTAS}
-    mejor = max(tabla, key=tabla.get)
-    return mejor, tabla[mejor], tabla
-
-# ------------------------------------------------------------
-# EVPI, EVSI y política óptima con sensor
-# ------------------------------------------------------------
-
-def meu_con_sensor(p_ok_dado_baja: float,
-                   p_ok_dado_alta: float,
-                   costo_obs: float = 0.0) -> Tuple[float, Dict[str, str]]:
+def utilidad_esperada_ruta_condicionada_sensor(
+    ruta: str,
+    lectura_sensor: str,
+    probabilidad_ok_dado_baja: float,
+    probabilidad_ok_dado_alta: float
+) -> float:
     """
-    MEU al observar un sensor imperfecto con costo de observación.
-    Política: para cada e en {OK, Alerta}, elegir la ruta con mayor EU dado e.
+    Calcula la utilidad esperada de una ruta dado un valor observado del sensor.
+    
+    EU[ruta | Sensor] = Σ_i Σ_f U(interferencia, firewall, ruta) * P(firewall) * P(interferencia | sensor)
+    
+    Parametros:
+        ruta: Ruta a evaluar
+        lectura_sensor: Lectura observada del sensor
+        probabilidad_ok_dado_baja: P(Sensor="OK" | Interferencia="Baja")
+        probabilidad_ok_dado_alta: P(Sensor="OK" | Interferencia="Alta")
+        
+    Retorna:
+        float: Utilidad esperada condicionada a la evidencia
     """
-    meu = 0.0
-    policy: Dict[str, str] = {}
-    for e in ["OK", "Alerta"]:
-        p_e = prob_sensor(e, p_ok_dado_baja, p_ok_dado_alta)
-        a_e, eu_e, _ = mejor_ruta_cond_sensor(e, p_ok_dado_baja, p_ok_dado_alta)
-        policy[e] = a_e
-        meu += p_e * eu_e
-    meu -= costo_obs
-    return meu, policy
+    posterior = probabilidad_posterior_interferencia_dado_sensor(
+        lectura_sensor, probabilidad_ok_dado_baja, probabilidad_ok_dado_alta
+    )
+    
+    utilidad_esperada = 0.0
+    
+    for estado_interferencia, prob_interferencia in posterior.items():
+        for estado_firewall, prob_firewall in PROBABILIDAD_FIREWALL.items():
+            utilidad = UTILIDADES[(estado_interferencia, estado_firewall, ruta)]
+            utilidad_esperada += utilidad * prob_firewall * prob_interferencia
+            
+    return utilidad_esperada
 
-def evpi_interferencia() -> float:
+
+def mejor_ruta_condicionada_sensor(
+    lectura_sensor: str,
+    probabilidad_ok_dado_baja: float,
+    probabilidad_ok_dado_alta: float
+) -> Tuple[str, float, Dict[str, float]]:
     """
-    EVPI respecto a Interferencia: observar el estado real de Interferencia antes de decidir.
+    Encuentra la mejor ruta y su utilidad esperada dado un valor del sensor.
+    
+    Parametros:
+        lectura_sensor: Lectura observada del sensor
+        probabilidad_ok_dado_baja: P(Sensor="OK" | Interferencia="Baja")
+        probabilidad_ok_dado_alta: P(Sensor="OK" | Interferencia="Alta")
+        
+    Retorna:
+        Tuple: (mejor_ruta, mejor_utilidad, utilidades_por_ruta)
     """
-    meu_perfect = 0.0
-    for i, pi in P_Interf.items():
-        # Mejor acción con conocimiento perfecto de i
-        mejor_eu_i = max(
-            sum(U[(i, f, ruta)] * P_Firewall[f] for f in P_Firewall) for ruta in RUTAS
+    utilidades_por_ruta = {}
+    mejor_ruta = None
+    mejor_utilidad = float("-inf")
+    
+    for ruta in RUTAS_DISPONIBLES:
+        utilidad_esperada = utilidad_esperada_ruta_condicionada_sensor(
+            ruta, lectura_sensor, probabilidad_ok_dado_baja, probabilidad_ok_dado_alta
         )
-        meu_perfect += pi * mejor_eu_i
-    _, meu0, _ = mejor_ruta_priori()
-    return meu_perfect - meu0
+        utilidades_por_ruta[ruta] = utilidad_esperada
+        
+        if utilidad_esperada > mejor_utilidad:
+            mejor_ruta = ruta
+            mejor_utilidad = utilidad_esperada
+            
+    return mejor_ruta, mejor_utilidad, utilidades_por_ruta
 
-def evsi_sensor(p_ok_dado_baja: float,
-                p_ok_dado_alta: float,
-                costo_obs: float = 0.0) -> Tuple[float, float, Dict[str, str]]:
+
+# ============================================================
+# METRICAS AVANZADAS DE VALOR DE INFORMACION
+# ============================================================
+
+def meu_con_sensor_imperfecto(
+    probabilidad_ok_dado_baja: float,
+    probabilidad_ok_dado_alta: float,
+    costo_observacion: float = 0.0
+) -> Tuple[float, Dict[str, str]]:
     """
-    EVSI del sensor con parámetros dados:
-    devuelve (EVSI, MEU_con_sensor, policy).
+    Calcula la Maxima Utilidad Esperada (MEU) al observar un sensor imperfecto.
+    
+    MEU = Σ_e P(Sensor=e) * max_a EU[a | Sensor=e] - costo_observacion
+    
+    Parametros:
+        probabilidad_ok_dado_baja: Fiabilidad del sensor cuando interferencia es baja
+        probabilidad_ok_dado_alta: Fiabilidad del sensor cuando interferencia es alta
+        costo_observacion: Costo de activar y leer el sensor
+        
+    Retorna:
+        Tuple: (meu_con_sensor, politica_optima)
     """
-    meu1, policy = meu_con_sensor(p_ok_dado_baja, p_ok_dado_alta, costo_obs=costo_obs)
-    _, meu0, _ = mejor_ruta_priori()
-    return (meu1 - meu0), meu1, policy
+    meu_total = 0.0
+    politica_optima: Dict[str, str] = {}
+    
+    for lectura_sensor in ["OK", "Alerta"]:
+        # Probabilidad de esta lectura del sensor
+        probabilidad_lectura = probabilidad_marginal_sensor(
+            lectura_sensor, probabilidad_ok_dado_baja, probabilidad_ok_dado_alta
+        )
+        
+        # Mejor accion para esta lectura
+        mejor_ruta, utilidad_mejor_ruta, _ = mejor_ruta_condicionada_sensor(
+            lectura_sensor, probabilidad_ok_dado_baja, probabilidad_ok_dado_alta
+        )
+        
+        politica_optima[lectura_sensor] = mejor_ruta
+        meu_total += probabilidad_lectura * utilidad_mejor_ruta
+    
+    # Restar costo de observacion
+    meu_total -= costo_observacion
+    
+    return meu_total, politica_optima
 
-def costo_maximo_racional(p_ok_dado_baja: float, p_ok_dado_alta: float) -> float:
+
+def valor_esperado_informacion_perfecta_interferencia() -> float:
     """
-    Umbral de costo tal que el decisor es indiferente entre observar o no:
-    costo* = MEU_con_sensor_sin_costo - MEU_sin_info
+    Calcula el EVPI (Expected Value of Perfect Information) sobre la Interferencia.
+    
+    EVPI = MEU(con informacion perfecta) - MEU(sin informacion)
+    
+    Representa el valor maximo que estariamos dispuestos a pagar por conocer
+    exactamente el estado de la interferencia antes de decidir.
+    
+    Retorna:
+        float: Valor del EVPI
     """
-    meu_sin_costo, _ = meu_con_sensor(p_ok_dado_baja, p_ok_dado_alta, costo_obs=0.0)
-    _, meu0, _ = mejor_ruta_priori()
-    return max(0.0, meu_sin_costo - meu0)
+    meu_con_informacion_perfecta = 0.0
+    
+    # Para cada estado posible de interferencia
+    for estado_interferencia, probabilidad_interferencia in PROBABILIDAD_INTERFERENCIA.items():
+        # Encontrar la mejor utilidad posible conociendo exactamente la interferencia
+        mejor_utilidad_estado = float("-inf")
+        
+        for ruta in RUTAS_DISPONIBLES:
+            utilidad_esperada_ruta = 0.0
+            # Solo sumamos sobre firewalls (ya conocemos interferencia)
+            for estado_firewall, probabilidad_firewall in PROBABILIDAD_FIREWALL.items():
+                utilidad = UTILIDADES[(estado_interferencia, estado_firewall, ruta)]
+                utilidad_esperada_ruta += utilidad * probabilidad_firewall
+            
+            if utilidad_esperada_ruta > mejor_utilidad_estado:
+                mejor_utilidad_estado = utilidad_esperada_ruta
+        
+        meu_con_informacion_perfecta += probabilidad_interferencia * mejor_utilidad_estado
+    
+    # MEU sin informacion
+    _, meu_sin_informacion, _ = mejor_ruta_sin_informacion()
+    
+    return meu_con_informacion_perfecta - meu_sin_informacion
 
-# ------------------------------------------------------------
-# Demo
-# ------------------------------------------------------------
 
-def demo():
-    print("=== Valor de la Información en TRON ===\n")
+def valor_esperado_informacion_muestra_sensor(
+    probabilidad_ok_dado_baja: float,
+    probabilidad_ok_dado_alta: float,
+    costo_observacion: float = 0.0
+) -> Tuple[float, float, Dict[str, str]]:
+    """
+    Calcula el EVSI (Expected Value of Sample Information) del sensor.
+    
+    EVSI = MEU(con sensor) - MEU(sin sensor)
+    
+    Parametros:
+        probabilidad_ok_dado_baja: Fiabilidad del sensor con interferencia baja
+        probabilidad_ok_dado_alta: Fiabilidad del sensor con interferencia alta
+        costo_observacion: Costo de usar el sensor
+        
+    Retorna:
+        Tuple: (evsi, meu_con_sensor, politica_optima)
+    """
+    meu_con_sensor, politica_optima = meu_con_sensor_imperfecto(
+        probabilidad_ok_dado_baja, probabilidad_ok_dado_alta, costo_observacion
+    )
+    
+    _, meu_sin_sensor, _ = mejor_ruta_sin_informacion()
+    
+    evsi = meu_con_sensor - meu_sin_sensor
+    return evsi, meu_con_sensor, politica_optima
 
-    # 1) MEU sin información
-    a0, meu0, tabla0 = mejor_ruta_priori()
-    print("Sin observar sensor:")
-    for a in RUTAS:
-        print(f"  EU[{a}] = {tabla0[a]:.2f}")
-    print(f"  Mejor ruta a priori: {a0} con MEU = {meu0:.2f}\n")
 
-    # 2) EVPI (información perfecta sobre Interferencia)
-    evpi = evpi_interferencia()
-    print(f"EVPI sobre Interferencia: {evpi:.2f}")
-    print("Interpretación: mejora máxima esperable si conociéramos exactamente la interferencia antes de decidir.\n")
+def costo_maximo_racional_observacion(
+    probabilidad_ok_dado_baja: float,
+    probabilidad_ok_dado_alta: float
+) -> float:
+    """
+    Calcula el umbral de costo maximo racional para observar el sensor.
+    
+    Es el costo que hace indiferente entre observar o no observar.
+    costo* = MEU(con sensor sin costo) - MEU(sin informacion)
+    
+    Parametros:
+        probabilidad_ok_dado_baja: Fiabilidad del sensor con interferencia baja
+        probabilidad_ok_dado_alta: Fiabilidad del sensor con interferencia alta
+        
+    Retorna:
+        float: Umbral de costo maximo racional
+    """
+    meu_sin_costo, _ = meu_con_sensor_imperfecto(
+        probabilidad_ok_dado_baja, probabilidad_ok_dado_alta, costo_observacion=0.0
+    )
+    
+    _, meu_sin_informacion, _ = mejor_ruta_sin_informacion()
+    
+    return max(0.0, meu_sin_costo - meu_sin_informacion)
 
-    # 3) EVSI con sensor imperfecto
-    # Parámetros de fiabilidad del sensor:
-    #   p_ok_dado_baja = P(Sensor=OK | Interferencia=Baja)
-    #   p_ok_dado_alta = P(Sensor=OK | Interferencia=Alta)
-    p_ok_baja = 0.70
-    p_ok_alta = 0.20
-    costo = 5.0  # costo de observar el sensor (energía/unidades equivalentes)
 
-    evsi, meu1, policy = evsi_sensor(p_ok_baja, p_ok_alta, costo_obs=costo)
-    print(f"Con sensor imperfecto (costo={costo:.2f}):")
-    print(f"  MEU con sensor = {meu1:.2f}")
-    print(f"  EVSI = MEU_con_sensor - MEU_sin_info = {evsi:.2f}")
-    print("  Política óptima condicionada al sensor:")
-    for e in ["OK", "Alerta"]:
-        print(f"    Si Sensor={e} -> Ruta {policy[e]}")
-    print()
+# ============================================================
+# DEMOSTRACION PRINCIPAL
+# ============================================================
 
-    # 4) Umbral de costo racional para observar
-    c_star = costo_maximo_racional(p_ok_baja, p_ok_alta)
-    print(f"Costo máximo racional de observación (indiferencia): {c_star:.2f}")
-    print("Si el costo real es menor que este umbral, conviene observar; si es mayor, no conviene.\n")
+def demostrar_valor_informacion():
+    """
+    Funcion principal que demuestra el analisis de valor de la informacion.
+    """
+    print("SISTEMA DE VALORACION DE INFORMACION - ESTRATEGIAS TRON")
+    print("=" * 70)
+    print("Analisis de cuando vale la pena recolectar informacion antes de decidir")
+    print("=" * 70)
+    
+    # 1. MEU sin informacion
+    print("\n1. ANALISIS SIN INFORMACION ADICIONAL")
+    print("-" * 50)
+    
+    mejor_ruta, meu_sin_info, utilidades = mejor_ruta_sin_informacion()
+    
+    print("Utilidades Esperadas sin informacion:")
+    for ruta in RUTAS_DISPONIBLES:
+        print(f"   EU[{ruta:12}] = {utilidades[ruta]:7.2f}")
+    
+    print(f"\n   MEJOR RUTA: {mejor_ruta}")
+    print(f"   MEU (Maxima Utilidad Esperada): {meu_sin_info:.2f}")
+    
+    # 2. EVPI - Valor de la informacion perfecta
+    print("\n2. VALOR DE LA INFORMACION PERFECTA (EVPI)")
+    print("-" * 50)
+    
+    evpi = valor_esperado_informacion_perfecta_interferencia()
+    print(f"   EVPI sobre Interferencia: {evpi:.2f}")
+    print(f"\n   INTERPRETACION:")
+    print(f"   - Es la mejora maxima esperable si conocieramos exactamente")
+    print(f"     el estado de la interferencia antes de decidir")
+    print(f"   - Representa el maximo que deberiamos pagar por informacion perfecta")
+    print(f"   - Si el costo de obtener informacion > {evpi:.2f}, no vale la pena")
+    
+    # 3. EVSI - Valor de la informacion imperfecta del sensor
+    print("\n3. VALOR DE LA INFORMACION IMPERFECTA (EVSI)")
+    print("-" * 50)
+    
+    # Parametros del sensor (fiabilidad)
+    probabilidad_ok_baja = 0.70  # P(Sensor="OK" | Interferencia="Baja")
+    probabilidad_ok_alta = 0.20  # P(Sensor="OK" | Interferencia="Alta") 
+    costo_sensor = 5.0           # Costo de activar el sensor
+    
+    evsi, meu_con_sensor, politica = valor_esperado_informacion_muestra_sensor(
+        probabilidad_ok_baja, probabilidad_ok_alta, costo_sensor
+    )
+    
+    print(f"   Sensor con fiabilidad:")
+    print(f"     P(OK|Baja) = {probabilidad_ok_baja:.2f}")
+    print(f"     P(OK|Alta) = {probabilidad_ok_alta:.2f}")
+    print(f"   Costo de observacion: {costo_sensor:.2f}")
+    print(f"\n   RESULTADOS:")
+    print(f"   - MEU con sensor: {meu_con_sensor:.2f}")
+    print(f"   - EVSI: {evsi:.2f}")
+    
+    print(f"\n   POLITICA OPTIMA CON SENSOR:")
+    for lectura, ruta_optima in politica.items():
+        print(f"     Si Sensor = {lectura:6} → Elegir {ruta_optima}")
+    
+    # 4. Umbral de costo racional
+    print("\n4. UMBRAL DE COSTO RACIONAL")
+    print("-" * 50)
+    
+    costo_umbral = costo_maximo_racional_observacion(probabilidad_ok_baja, probabilidad_ok_alta)
+    
+    print(f"   Umbral de costo maximo racional: {costo_umbral:.2f}")
+    print(f"\n   INTERPRETACION:")
+    print(f"   - Si costo real < {costo_umbral:.2f}: CONVIENE observar")
+    print(f"   - Si costo real > {costo_umbral:.2f}: NO CONVIENE observar")
+    print(f"   - Costo actual ({costo_sensor:.2f}) vs Umbral ({costo_umbral:.2f}): ", 
+          "CONVIENE" if costo_sensor < costo_umbral else "NO CONVIENE")
+    
+    # 5. Analisis de sensibilidad
+    print("\n5. ANALISIS DE SENSIBILIDAD - CALIDAD DEL SENSOR")
+    print("-" * 50)
+    print("   EVSI para diferentes niveles de fiabilidad (sin costo):")
+    print("\n   P(OK|Baja)  P(OK|Alta)   EVSI")
+    print("   " + "-" * 30)
+    
+    # Variar la calidad del sensor
+    for prob_baja in [0.60, 0.70, 0.80, 0.85, 0.90]:
+        for prob_alta in [0.50, 0.40, 0.30, 0.25, 0.20]:
+            evsi_sin_costo, _, _ = valor_esperado_informacion_muestra_sensor(
+                prob_baja, prob_alta, costo_observacion=0.0
+            )
+            print(f"     {prob_baja:6.2f}      {prob_alta:6.2f}     {evsi_sin_costo:6.2f}")
+    
+    print("\n" + "=" * 70)
+    print("ANALISIS COMPLETADO - SISTEMA DE DECISION OPTIMIZADO")
+    print("=" * 70)
 
-    # 5) Análisis de sensibilidad del EVSI respecto a la calidad del sensor
-    print("Sensibilidad del EVSI al variar la calidad del sensor (sin costo):")
-    print("  pOK|Baja  pOK|Alta   EVSI")
-    for p_baja in [0.60, 0.70, 0.80, 0.85, 0.90]:
-        for p_alta in [0.50, 0.40, 0.30, 0.25, 0.20]:
-            evsi_sin_costo, _, _ = evsi_sensor(p_baja, p_alta, costo_obs=0.0)
-            print(f"   {p_baja:6.2f}   {p_alta:6.2f}   {evsi_sin_costo:6.2f}")
-        print()
 
 if __name__ == "__main__":
-    demo()
+    demostrar_valor_informacion()

@@ -1,4 +1,4 @@
-# Regla de la Cadena (Chain Rule) — Ejemplo simple con temática TRON
+# Regla de la Cadena (Chain Rule) — Ejemplo con temática TRON
 #
 # P(Power, Gate, Sensor, SafePath)
 # = P(Power) * P(Gate|Power) * P(Sensor|Power) * P(SafePath|Gate)

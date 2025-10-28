@@ -1,205 +1,372 @@
-# Redes de Decisión (Influence Diagram) en temática TRON
-# - Chance: Interferencia, Firewall, Sensor (depende de Interferencia)
-# - Decisión: Ruta (observa Sensor)
-# - Utilidad: U(Interferencia, Firewall, Ruta)
-# - Salidas: política óptima Sensor->Ruta, MEU con y sin observación, VPI
+"""
+SISTEMA DE REDES DE DECISION (INFLUENCE DIAGRAM) - TRON DIGITAL
+
+Este modulo implementa una Red de Decision para modelar estrategias optimas
+en el Grid de TRON. Combina variables aleatorias del entorno (Interferencia,
+Firewall, Sensor) con decisiones de ruta y funciones de utilidad para
+determinar politicas optimas y calcular el valor de la informacion.
+"""
 
 from typing import Dict, Tuple, List
-from dataclasses import dataclass
 
-# ------------------------------------------------------------
-# Utilidades probabilísticas básicas
-# ------------------------------------------------------------
 
-def normalize(dist: Dict[str, float]) -> Dict[str, float]:
-    s = sum(dist.values())
-    if s <= 0:
-        raise ValueError("Distribución no normalizable.")
-    return {k: v / s for k, v in dist.items()}
+# ============================================================
+# FUNCIONES AUXILIARES PROBABILISTICAS
+# ============================================================
 
-# ------------------------------------------------------------
-# Definición de la red de decisión TRON
-# ------------------------------------------------------------
+def normalizar_distribucion(distribucion: Dict[str, float]) -> Dict[str, float]:
+    """
+    Normaliza una distribucion de probabilidad para que sume 1.
+    
+    Parametros:
+        distribucion: Diccionario con valores no normalizados
+        
+    Retorna:
+        Dict[str, float]: Distribucion normalizada
+        
+    Lanza:
+        ValueError: Si la distribucion no es normalizable
+    """
+    suma_total = sum(distribucion.values())
+    
+    if suma_total <= 0:
+        raise ValueError("Distribucion no normalizable: suma total <= 0")
+        
+    return {clave: valor / suma_total for clave, valor in distribucion.items()}
 
-# P(Interferencia)
-P_Interf = {
-    "Baja": 0.6,
-    "Alta": 0.4,
+
+# ============================================================
+# DEFINICION DE LA RED DE DECISION TRON
+# ============================================================
+
+# Probabilidad prior de Interferencia en el sistema
+# Representa la probabilidad de que haya niveles altos de interferencia
+PROBABILIDAD_INTERFERENCIA = {
+    "Baja": 0.6,   # 60% probabilidad de interferencia baja
+    "Alta": 0.4,   # 40% probabilidad de interferencia alta
 }
 
-# P(Firewall) independiente de Interferencia (para simplificar)
-P_Firewall = {
-    "Off": 0.7,
-    "On": 0.3,
+# Probabilidad de estado del Firewall (independiente de la interferencia)
+# Representa si los firewalls del sistema estan activos o no
+PROBABILIDAD_FIREWALL = {
+    "Off": 0.7,    # 70% probabilidad de firewall desactivado
+    "On": 0.3,     # 30% probabilidad de firewall activado
 }
 
-# P(Sensor | Interferencia): el sensor es ruidoso pero informativo
-# - Si Interferencia=Baja, el sensor dice "OK" con alta probabilidad.
-# - Si Interferencia=Alta, el sensor tiende a "Alerta".
-P_Sensor_given_Interf = {
-    ("OK", "Baja"): 0.85,
-    ("Alerta", "Baja"): 0.15,
-    ("OK", "Alta"): 0.25,
-    ("Alerta", "Alta"): 0.75,
+# Probabilidad condicional del Sensor dado el estado de Interferencia
+# Modela la precision del sensor para detectar interferencias
+PROBABILIDAD_SENSOR_DADO_INTERFERENCIA = {
+    # Si la interferencia es Baja:
+    ("OK", "Baja"): 0.85,      # 85% de detectar correctamente estado OK
+    ("Alerta", "Baja"): 0.15,  # 15% de falso positivo (alerta erronea)
+    
+    # Si la interferencia es Alta:
+    ("OK", "Alta"): 0.25,      # 25% de falso negativo (no detecta interferencia)
+    ("Alerta", "Alta"): 0.75,  # 75% de detectar correctamente alerta
 }
 
-# Acciones disponibles (decisión)
-RUTAS = ["Sector_Luz", "Portal", "Arena"]
+# Rutas disponibles para la decision
+RUTAS_DISPONIBLES = ["Sector_Luz", "Portal", "Arena"]
 
-# Utilidad U(Interferencia, Firewall, Ruta)
-# Interpretación: energía neta aproximada. Penaliza ir por rutas sensibles cuando hay interferencia o firewall activo.
-# Puedes ajustar números para estudiar políticas distintas.
-U: Dict[Tuple[str, str, str], float] = {}
-def defU(interf: str, fw: str, ruta: str, val: float):
-    U[(interf, fw, ruta)] = val
+# Diccionario global para almacenar las utilidades
+UTILIDADES: Dict[Tuple[str, str, str], float] = {}
 
-# Heurística de utilidad (coherente con el mundo TRON):
-# - Sector_Luz: muy bueno con interferencia baja, ok con firewall off; sensible a firewall y a interferencia alta.
-# - Portal: robusto al firewall pero más variable con interferencia alta.
-# - Arena: ruta alternativa; mediana con baja, cae con alta y con firewall on.
-valores = {
-    ("Baja", "Off", "Sector_Luz"): 120,
-    ("Baja", "On",  "Sector_Luz"): 85,
-    ("Alta", "Off", "Sector_Luz"): 60,
-    ("Alta", "On",  "Sector_Luz"): 30,
 
-    ("Baja", "Off", "Portal"):     100,
-    ("Baja", "On",  "Portal"):     95,   # portal tolera más firewall
-    ("Alta", "Off", "Portal"):     80,
-    ("Alta", "On",  "Portal"):     55,
+def definir_utilidad(interferencia: str, firewall: str, ruta: str, valor: float):
+    """
+    Define el valor de utilidad para una combinacion especifica de estados.
+    
+    Parametros:
+        interferencia: Estado de interferencia ("Baja" o "Alta")
+        firewall: Estado del firewall ("Off" o "On")  
+        ruta: Ruta seleccionada
+        valor: Valor de utilidad (energia neta esperada)
+    """
+    UTILIDADES[(interferencia, firewall, ruta)] = valor
 
-    ("Baja", "Off", "Arena"):       90,
-    ("Baja", "On",  "Arena"):       70,
-    ("Alta", "Off", "Arena"):       50,
-    ("Alta", "On",  "Arena"):       20,
+
+# Definicion de utilidades basadas en caracteristicas del mundo TRON:
+# - Sector_Luz: Excelente rendimiento con interferencia baja, muy sensible a interferencia alta
+# - Portal: Balanceado, mas resistente a firewalls pero variable con interferencia
+# - Arena: Alternativa moderada, afectada por ambos factores
+
+VALORES_UTILIDAD = {
+    # Sector_Luz - Ruta de alto rendimiento pero sensible
+    ("Baja", "Off", "Sector_Luz"): 120,  # Condiciones optimas
+    ("Baja", "On",  "Sector_Luz"): 85,   # Firewall reduce eficiencia
+    ("Alta", "Off", "Sector_Luz"): 60,   # Interferencia alta afecta mucho
+    ("Alta", "On",  "Sector_Luz"): 30,   # Condiciones criticas
+
+    # Portal - Ruta balanceada y resistente
+    ("Baja", "Off", "Portal"):     100,  # Buen rendimiento
+    ("Baja", "On",  "Portal"):     95,   # Poca afectacion por firewall
+    ("Alta", "Off", "Portal"):     80,   # Moderada afectacion por interferencia
+    ("Alta", "On",  "Portal"):     55,   # Condiciones adversas
+
+    # Arena - Ruta alternativa moderada
+    ("Baja", "Off", "Arena"):       90,  # Rendimiento aceptable
+    ("Baja", "On",  "Arena"):       70,  # Afectado por firewall
+    ("Alta", "Off", "Arena"):       50,  # Afectado por interferencia
+    ("Alta", "On",  "Arena"):       20,  # Condiciones muy adversas
 }
-for k, v in valores.items():
-    defU(*k, v)
 
-# ------------------------------------------------------------
-# Inferencia: posteriors y utilidades esperadas
-# ------------------------------------------------------------
+# Cargar todas las utilidades definidas
+for clave, valor in VALORES_UTILIDAD.items():
+    definir_utilidad(*clave, valor)
 
-def P_sensor(e: str) -> Dict[str, float]:
-    """
-    Posterior P(Interferencia | Sensor=e) por Bayes.
-    """
-    # Numeradores: P(e|i) P(i)
-    num = {}
-    for i in P_Interf.keys():
-        num[i] = P_Sensor_given_Interf[(e, i)] * P_Interf[i]
-    return normalize(num)
 
-def expected_utility_of_action_given_evidence(ruta: str, sensor_obs: str) -> float:
-    """
-    EU[ ruta | Sensor = sensor_obs ] = sum_i sum_f U(i,f,ruta) P(f) P(i | sensor)
-    Asumimos Firewall independiente de Interferencia y del Sensor.
-    """
-    p_i_given_e = P_sensor(sensor_obs)
-    eu = 0.0
-    for i, pi in p_i_given_e.items():
-        for f, pf in P_Firewall.items():
-            eu += U[(i, f, ruta)] * pf * pi
-    return eu
+# ============================================================
+# INFERENCIA Y CALCULOS DE UTILIDAD ESPERADA
+# ============================================================
 
-def best_action_given_sensor(sensor_obs: str) -> Tuple[str, float, Dict[str, float]]:
+def probabilidad_interferencia_dado_sensor(lectura_sensor: str) -> Dict[str, float]:
     """
-    Devuelve la mejor ruta y su EU dado el valor observado del sensor,
-    junto con las EU por acción para análisis.
+    Calcula la probabilidad posterior de Interferencia dado una lectura del sensor.
+    
+    Usa el teorema de Bayes: P(Interferencia | Sensor) ∝ P(Sensor | Interferencia) * P(Interferencia)
+    
+    Parametros:
+        lectura_sensor: Lectura del sensor ("OK" o "Alerta")
+        
+    Retorna:
+        Dict[str, float]: Distribucion posterior normalizada de Interferencia
     """
-    by_action = {}
-    best_a, best_eu = None, float("-inf")
-    for a in RUTAS:
-        eu = expected_utility_of_action_given_evidence(a, sensor_obs)
-        by_action[a] = eu
-        if eu > best_eu:
-            best_a, best_eu = a, eu
-    return best_a, best_eu, by_action
+    numeradores = {}
+    
+    # Calcular numeradores para cada estado de interferencia
+    for estado_interferencia, probabilidad_prior in PROBABILIDAD_INTERFERENCIA.items():
+        probabilidad_condicional = PROBABILIDAD_SENSOR_DADO_INTERFERENCIA[(lectura_sensor, estado_interferencia)]
+        numeradores[estado_interferencia] = probabilidad_condicional * probabilidad_prior
+    
+    return normalizar_distribucion(numeradores)
 
-def prior_expected_utility_of_action(ruta: str) -> float:
+
+def utilidad_esperada_accion_dado_evidencia(ruta: str, lectura_sensor: str) -> float:
     """
-    EU[ruta] sin observar el sensor: sum_i sum_f U(i,f,ruta) P(i) P(f).
+    Calcula la utilidad esperada de una accion dado un valor observado del sensor.
+    
+    EU[ruta | Sensor] = Σ_i Σ_f U(interferencia, firewall, ruta) * P(firewall) * P(interferencia | sensor)
+    
+    Parametros:
+        ruta: Ruta a evaluar
+        lectura_sensor: Lectura observada del sensor
+        
+    Retorna:
+        float: Utilidad esperada condicionada a la evidencia
     """
-    eu = 0.0
-    for i, pi in P_Interf.items():
-        for f, pf in P_Firewall.items():
-            eu += U[(i, f, ruta)] * pf * pi
-    return eu
+    # Obtener distribucion posterior de interferencia dado el sensor
+    probabilidad_interferencia_posterior = probabilidad_interferencia_dado_sensor(lectura_sensor)
+    
+    utilidad_esperada = 0.0
+    
+    # Calcular suma sobre todos los estados posibles
+    for estado_interferencia, prob_interferencia in probabilidad_interferencia_posterior.items():
+        for estado_firewall, prob_firewall in PROBABILIDAD_FIREWALL.items():
+            utilidad = UTILIDADES[(estado_interferencia, estado_firewall, ruta)]
+            utilidad_esperada += utilidad * prob_firewall * prob_interferencia
+            
+    return utilidad_esperada
 
-def best_action_without_sensor() -> Tuple[str, float, Dict[str, float]]:
-    by_action = {}
-    best_a, best_eu = None, float("-inf")
-    for a in RUTAS:
-        eu = prior_expected_utility_of_action(a)
-        by_action[a] = eu
-        if eu > best_eu:
-            best_a, best_eu = a, eu
-    return best_a, best_eu, by_action
 
-def probability_of_sensor(e: str) -> float:
+def mejor_accion_dado_sensor(lectura_sensor: str) -> Tuple[str, float, Dict[str, float]]:
     """
-    P(Sensor=e) = sum_i P(e|i) P(i)
+    Encuentra la mejor accion y su utilidad esperada dado un valor del sensor.
+    
+    Parametros:
+        lectura_sensor: Lectura observada del sensor
+        
+    Retorna:
+        Tuple: (mejor_ruta, mejor_utilidad, utilidades_por_accion)
     """
-    s = 0.0
-    for i, pi in P_Interf.items():
-        s += P_Sensor_given_Interf[(e, i)] * pi
-    return s
+    utilidades_por_accion = {}
+    mejor_ruta = None
+    mejor_utilidad = float("-inf")
+    
+    for ruta in RUTAS_DISPONIBLES:
+        utilidad_esperada = utilidad_esperada_accion_dado_evidencia(ruta, lectura_sensor)
+        utilidades_por_accion[ruta] = utilidad_esperada
+        
+        if utilidad_esperada > mejor_utilidad:
+            mejor_ruta = ruta
+            mejor_utilidad = utilidad_esperada
+            
+    return mejor_ruta, mejor_utilidad, utilidades_por_accion
 
-def MEU_with_policy() -> Tuple[Dict[str, str], float]:
+
+def utilidad_esperada_accion_prior(ruta: str) -> float:
     """
-    Calcula la política óptima π*: Sensor -> Ruta y su utilidad esperada MEU.
-    MEU = sum_e P(e) * max_a EU[a | e]
+    Calcula la utilidad esperada de una accion sin observar el sensor.
+    
+    EU[ruta] = Σ_i Σ_f U(interferencia, firewall, ruta) * P(interferencia) * P(firewall)
+    
+    Parametros:
+        ruta: Ruta a evaluar
+        
+    Retorna:
+        float: Utilidad esperada sin informacion del sensor
     """
-    policy = {}
-    MEU = 0.0
-    for e in ["OK", "Alerta"]:
-        a_star, eu_star, _ = best_action_given_sensor(e)
-        policy[e] = a_star
-        MEU += probability_of_sensor(e) * eu_star
-    return policy, MEU
+    utilidad_esperada = 0.0
+    
+    for estado_interferencia, prob_interferencia in PROBABILIDAD_INTERFERENCIA.items():
+        for estado_firewall, prob_firewall in PROBABILIDAD_FIREWALL.items():
+            utilidad = UTILIDADES[(estado_interferencia, estado_firewall, ruta)]
+            utilidad_esperada += utilidad * prob_firewall * prob_interferencia
+            
+    return utilidad_esperada
 
-def value_of_perfect_information() -> float:
+
+def mejor_accion_sin_sensor() -> Tuple[str, float, Dict[str, float]]:
     """
-    VPI del sensor = MEU(con observar Sensor) - MEU(sin observar Sensor)
+    Encuentra la mejor accion sin informacion del sensor.
+    
+    Retorna:
+        Tuple: (mejor_ruta, mejor_utilidad, utilidades_por_accion)
     """
-    policy, meu_with = MEU_with_policy()
-    _, meu_wo, _ = best_action_without_sensor()
-    return meu_with - meu_wo
+    utilidades_por_accion = {}
+    mejor_ruta = None
+    mejor_utilidad = float("-inf")
+    
+    for ruta in RUTAS_DISPONIBLES:
+        utilidad_esperada = utilidad_esperada_accion_prior(ruta)
+        utilidades_por_accion[ruta] = utilidad_esperada
+        
+        if utilidad_esperada > mejor_utilidad:
+            mejor_ruta = ruta
+            mejor_utilidad = utilidad_esperada
+            
+    return mejor_ruta, mejor_utilidad, utilidades_por_accion
 
-# ------------------------------------------------------------
-# Demo
-# ------------------------------------------------------------
 
-def demo():
-    print("=== Red de Decisión TRON: política óptima condicionada al Sensor ===\n")
+def probabilidad_sensor(lectura_sensor: str) -> float:
+    """
+    Calcula la probabilidad marginal de una lectura del sensor.
+    
+    P(Sensor) = Σ_i P(Sensor | Interferencia=i) * P(Interferencia=i)
+    
+    Parametros:
+        lectura_sensor: Lectura del sensor a evaluar
+        
+    Retorna:
+        float: Probabilidad de la lectura del sensor
+    """
+    probabilidad_total = 0.0
+    
+    for estado_interferencia, prob_interferencia in PROBABILIDAD_INTERFERENCIA.items():
+        probabilidad_condicional = PROBABILIDAD_SENSOR_DADO_INTERFERENCIA[(lectura_sensor, estado_interferencia)]
+        probabilidad_total += probabilidad_condicional * prob_interferencia
+        
+    return probabilidad_total
 
-    # Mejor acción sin observar el sensor
-    a0, eu0, tabla0 = best_action_without_sensor()
-    print("Sin observar el Sensor (política fija):")
-    for a in RUTAS:
-        print(f"  EU[{a}] = {tabla0[a]:.2f}")
-    print(f"  Mejor ruta a priori: {a0} con EU = {eu0:.2f}\n")
 
-    # Mejor acción condicionada a cada observación del sensor
-    for e in ["OK", "Alerta"]:
-        a_e, eu_e, tabla_e = best_action_given_sensor(e)
-        post = P_sensor(e)
-        print(f"Observando Sensor={e}:")
-        print(f"  Posterior Interferencia | {e}: " +
-              ", ".join([f"{i}={post[i]:.3f}" for i in ["Baja","Alta"]]))
-        for a in RUTAS:
-            print(f"  EU[{a} | {e}] = {tabla_e[a]:.2f}")
-        print(f"  Mejor acción dado {e}: {a_e} con EU = {eu_e:.2f}\n")
+def utilidad_esperada_con_politica() -> Tuple[Dict[str, str], float]:
+    """
+    Calcula la politica optima y la utilidad esperada maxima (MEU) con observacion del sensor.
+    
+    MEU = Σ_e P(Sensor=e) * max_a EU[a | Sensor=e]
+    
+    Retorna:
+        Tuple: (politica_optima, meu_con_sensor)
+    """
+    politica_optima = {}
+    meu_total = 0.0
+    
+    for lectura_sensor in ["OK", "Alerta"]:
+        mejor_ruta, utilidad_mejor_ruta, _ = mejor_accion_dado_sensor(lectura_sensor)
+        politica_optima[lectura_sensor] = mejor_ruta
+        
+        probabilidad_lectura = probabilidad_sensor(lectura_sensor)
+        meu_total += probabilidad_lectura * utilidad_mejor_ruta
+        
+    return politica_optima, meu_total
 
-    # Política óptima y VPI
-    policy, meu_with = MEU_with_policy()
-    vpi = value_of_perfect_information()
-    print("Política óptima π* observando el Sensor:")
-    for e in ["OK", "Alerta"]:
-        print(f"  Si Sensor={e} -> elegir {policy[e]}")
-    print(f"\nMEU con observación del Sensor: {meu_with:.2f}")
-    print(f"MEU sin observación:           {eu0:.2f}")
-    print(f"Valor de la Información (VPI): {vpi:.2f}")
+
+def valor_informacion_perfecta() -> float:
+    """
+    Calcula el Valor de la Informacion Perfecta (VPI) del sensor.
+    
+    VPI = MEU(con sensor) - MEU(sin sensor)
+    
+    Retorna:
+        float: Valor de la informacion proporcionada por el sensor
+    """
+    politica, meu_con_sensor = utilidad_esperada_con_politica()
+    _, meu_sin_sensor, _ = mejor_accion_sin_sensor()
+    
+    return meu_con_sensor - meu_sin_sensor
+
+
+# ============================================================
+# DEMOSTRACION PRINCIPAL
+# ============================================================
+
+def demostrar_red_decision():
+    """
+    Funcion principal que demuestra el funcionamiento de la red de decision.
+    """
+    print("SISTEMA DE REDES DE DECISION - ESTRATEGIAS OPTIMAS EN TRON")
+    print("=" * 70)
+    print("Analisis de politicas condicionadas a observaciones del sensor")
+    print("=" * 70)
+    
+    # Analisis sin informacion del sensor
+    print("\n1. ANALISIS SIN OBSERVAR EL SENSOR (Politica Fija)")
+    print("-" * 50)
+    
+    mejor_ruta_sin_sensor, utilidad_mejor_sin_sensor, utilidades_sin_sensor = mejor_accion_sin_sensor()
+    
+    for ruta in RUTAS_DISPONIBLES:
+        print(f"   EU[{ruta:12}] = {utilidades_sin_sensor[ruta]:6.2f}")
+    
+    print(f"\n   MEJOR RUTA A PRIORI: {mejor_ruta_sin_sensor}")
+    print(f"   UTILIDAD ESPERADA:   {utilidad_mejor_sin_sensor:.2f}")
+    
+    # Analisis con informacion del sensor
+    print("\n2. ANALISIS CON OBSERVACION DEL SENSOR")
+    print("-" * 50)
+    
+    for lectura_sensor in ["OK", "Alerta"]:
+        mejor_ruta_con_sensor, utilidad_mejor_con_sensor, utilidades_con_sensor = mejor_accion_dado_sensor(lectura_sensor)
+        posterior = probabilidad_interferencia_dado_sensor(lectura_sensor)
+        
+        print(f"\n   OBSERVACION: Sensor = {lectura_sensor}")
+        print(f"   Probabilidad Posterior Interferencia:")
+        print(f"     Baja: {posterior['Baja']:.3f}, Alta: {posterior['Alta']:.3f}")
+        
+        for ruta in RUTAS_DISPONIBLES:
+            print(f"     EU[{ruta:12} | {lectura_sensor}] = {utilidades_con_sensor[ruta]:6.2f}")
+        
+        print(f"   MEJOR ACCION: {mejor_ruta_con_sensor}")
+        print(f"   UTILIDAD ESPERADA: {utilidad_mejor_con_sensor:.2f}")
+    
+    # Politica optima y VPI
+    print("\n3. POLITICA OPTIMA Y VALOR DE LA INFORMACION")
+    print("-" * 50)
+    
+    politica_optima, meu_con_sensor = utilidad_esperada_con_politica()
+    vpi = valor_informacion_perfecta()
+    
+    print("\n   POLITICA OPTIMA π* (Sensor → Ruta):")
+    for lectura_sensor, ruta_optima in politica_optima.items():
+        print(f"     Si Sensor = {lectura_sensor:6} → Elegir {ruta_optima}")
+    
+    print(f"\n   METRICAS COMPARATIVAS:")
+    print(f"     MEU con observacion del sensor: {meu_con_sensor:8.2f}")
+    print(f"     MEU sin observacion:           {utilidad_mejor_sin_sensor:8.2f}")
+    print(f"     Valor de la Informacion (VPI): {vpi:8.2f}")
+    
+    # Interpretacion del VPI
+    print(f"\n   INTERPRETACION DEL VPI:")
+    if vpi > 10:
+        print(f"     ALTO VALOR - El sensor proporciona informacion muy valiosa")
+    elif vpi > 5:
+        print(f"     VALOR MODERADO - El sensor es util pero no critico")
+    else:
+        print(f"     BAJO VALOR - El sensor aporta poca informacion adicional")
+    
+    print("\n" + "=" * 70)
+    print("ANALISIS COMPLETADO - SISTEMA TRON OPTIMIZADO")
+    print("=" * 70)
+
 
 if __name__ == "__main__":
-    demo()
+    demostrar_red_decision()
